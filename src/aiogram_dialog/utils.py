@@ -1,5 +1,7 @@
+import sys
+from collections.abc import Callable
 from logging import getLogger
-from typing import Optional, Union
+from typing import Any, ParamSpec, TypeVar
 
 from aiogram.types import (
     CallbackQuery,
@@ -72,8 +74,8 @@ def join_reply_callback(text: str, callback_data: str) -> str:
 
 
 def split_reply_callback(
-        data: Optional[str],
-) -> tuple[Optional[str], Optional[str]]:
+        data: str | None,
+) -> tuple[str | None, str | None]:
     if not data:
         return None, None
     text = data.rstrip(REPLY_CALLBACK_SYMBOLS)
@@ -84,13 +86,13 @@ def split_reply_callback(
 def decode_reply_callback(data: str) -> str:
     bytes_data = bytes(
         _decode_reply_callback_byte(little, big)
-        for little, big in zip(data[::2], data[1::2])
+        for little, big in zip(data[::2], data[1::2], strict=False)
     )
     return bytes_data.decode("utf-8")
 
 
 def _transform_to_reply_button(
-        button: Union[InlineKeyboardButton, KeyboardButton],
+        button: InlineKeyboardButton | KeyboardButton,
 ) -> KeyboardButton:
     if isinstance(button, KeyboardButton):
         return button
@@ -100,13 +102,30 @@ def _transform_to_reply_button(
         raise ValueError(
             "Cannot convert inline button without callback_data or web_app",
         )
-    return KeyboardButton(text=join_reply_callback(
-        text=button.text, callback_data=button.callback_data,
-    ))
+
+    style: str | None = getattr(
+        button,
+        "style",
+        button.model_extra.get("style"),
+    )
+    emoji_id: str | None = getattr(
+        button,
+        "icon_custom_emoji_id",
+        button.model_extra.get("icon_custom_emoji_id"),
+    )
+
+    return KeyboardButton(
+        text=join_reply_callback(
+            text=button.text,
+            callback_data=button.callback_data,
+        ),
+        style=style,
+        icon_custom_emoji_id=emoji_id,
+    )
 
 
 def transform_to_reply_keyboard(
-        keyboard: list[list[Union[InlineKeyboardButton, KeyboardButton]]],
+        keyboard: list[list[InlineKeyboardButton | KeyboardButton]],
 ) -> list[list[KeyboardButton]]:
     return [
         [_transform_to_reply_button(button) for button in row]
@@ -157,8 +176,8 @@ def is_user_loaded(user: User) -> bool:
 
 
 def get_media_id(
-    message: Union[Message, InaccessibleMessage],
-) -> Optional[MediaId]:
+    message: Message | InaccessibleMessage,
+) -> MediaId | None:
     if isinstance(message, InaccessibleMessage):
         return None
 
@@ -179,8 +198,8 @@ def get_media_id(
 
 
 def intent_callback_data(
-        intent_id: str, callback_data: Optional[str],
-) -> Optional[str]:
+        intent_id: str, callback_data: str | None,
+) -> str | None:
     if callback_data is None:
         return None
     prefix = intent_id + CB_SEP
@@ -198,8 +217,23 @@ def add_intent_id(keyboard: RawKeyboard, intent_id: str):
                 )
 
 
-def remove_intent_id(callback_data: str) -> tuple[Optional[str], str]:
+def remove_intent_id(callback_data: str) -> tuple[str | None, str]:
     if CB_SEP in callback_data:
         intent_id, new_data = callback_data.split(CB_SEP, maxsplit=1)
         return intent_id, new_data
     return None, callback_data
+
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+def add_exception_note(f: Callable[P, R]) -> Callable[P, R]:
+    async def inner(self: Any, *args: P.args, **kwargs: P.kwargs) -> R:
+        try:
+            return await f(self, *args, **kwargs)
+        except Exception as e:
+            # execute only on version >= 3.11
+            if sys.version_info >= (3, 11):
+                e.add_note(f"at {self!r}")
+            raise
+    return inner
